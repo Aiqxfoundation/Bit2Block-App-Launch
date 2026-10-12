@@ -85,6 +85,9 @@ Registering issues an access key that is only shown once.
   (`session`, not `sessions`), and `device_fingerprints` / `user_devices` reference
   `devices.id` with no cascade, so delete the fingerprint rows **before** the device row.
   Everything else hangs off `users.id` and can be removed with an FK-driven delete loop.
+  `referral_codes` has **no `user_id` column**: ownership uses `owner_id` and redemption
+  uses `used_by`. Cleanup verification must check both columns; querying `user_id`
+  produces a database error even though the application is healthy.
 - API guards that the UI depends on: `POST /api/register` rejects device payloads without
   `fingerprints.stableHash` / `volatileHash` with a 400 (the columns are NOT NULL), and
   `POST /api/withdrawals` rejects amounts below the per-currency minimum

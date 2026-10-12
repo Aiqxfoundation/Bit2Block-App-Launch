@@ -1168,8 +1168,23 @@ export async function registerRoutes(app: Express) {
         }
       }
 
-      // Check daily withdrawal limit
+      // Minimums mirror the withdrawal UI and are enforced here too, so the API
+      // cannot be used to submit amounts the UI refuses.
       const requestedAmount = parseFloat(req.body.amount || "0");
+      const requestedCurrency = String(req.body.currency || "USDT").toUpperCase();
+      const minimumWithdrawal: Record<string, number> = { USDT: 50, BTC: 0.001, B2B: 0.01 };
+
+      if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) {
+        return res.status(400).json({ message: "Enter a valid withdrawal amount." });
+      }
+
+      if (minimumWithdrawal[requestedCurrency] !== undefined && requestedAmount < minimumWithdrawal[requestedCurrency]) {
+        return res.status(400).json({
+          message: `Minimum withdrawal is ${minimumWithdrawal[requestedCurrency]} ${requestedCurrency}.`
+        });
+      }
+
+      // Check daily withdrawal limit
       const dailyLimit = parseFloat(freshUser.dailyWithdrawalLimit || "1000");
       const alreadyWithdrawnToday = await storage.getDailyWithdrawalTotal(freshUser.id);
 

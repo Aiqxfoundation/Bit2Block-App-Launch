@@ -147,7 +147,17 @@ export function setupAuth(app: Express) {
       }
       
       // Check device fingerprint first (before creating user)
-      if (!deviceData || !deviceData.serverDeviceId || !deviceData.fingerprints) {
+      const fingerprints = deviceData?.fingerprints;
+      if (
+        !deviceData ||
+        typeof deviceData.serverDeviceId !== "string" ||
+        !deviceData.serverDeviceId ||
+        !fingerprints ||
+        typeof fingerprints.stableHash !== "string" ||
+        !fingerprints.stableHash ||
+        typeof fingerprints.volatileHash !== "string" ||
+        !fingerprints.volatileHash
+      ) {
         return res.status(400).json({ 
           message: "Device verification is required for registration. Please refresh the page and try again." 
         });
@@ -157,7 +167,7 @@ export function setupAuth(app: Express) {
       const deviceResult = await storage.upsertDevice({
         serverDeviceId: deviceData.serverDeviceId,
         lastIp: getClientIp(req),
-        fingerprints: deviceData.fingerprints
+        fingerprints
       });
 
       // CRITICAL SECURITY: Enforce device registration constraints
@@ -253,7 +263,7 @@ export function setupAuth(app: Express) {
         const deviceResult = await storage.upsertDevice({
           serverDeviceId: deviceData.serverDeviceId,
           lastIp: getClientIp(req),
-          fingerprints: deviceData.fingerprints
+          fingerprints
         });
         await storage.linkUserToDevice(user.id, deviceResult.device.id);
       }

@@ -81,3 +81,11 @@ Registering issues an access key that is only shown once.
   authoritative. Do not delete the `bit2block-pgdata` volume to refresh dependencies.
 - `server/backup.ts` writes daily JSON backups to `backups/` under the package dir (already
   contains a committed sample).
+- Cleaning up a throwaway test account by hand: the session table is **singular**
+  (`session`, not `sessions`), and `device_fingerprints` / `user_devices` reference
+  `devices.id` with no cascade, so delete the fingerprint rows **before** the device row.
+  Everything else hangs off `users.id` and can be removed with an FK-driven delete loop.
+- API guards that the UI depends on: `POST /api/register` rejects device payloads without
+  `fingerprints.stableHash` / `volatileHash` with a 400 (the columns are NOT NULL), and
+  `POST /api/withdrawals` rejects amounts below the per-currency minimum
+  (USDT 50, BTC 0.001, B2B 0.01) with a 400.

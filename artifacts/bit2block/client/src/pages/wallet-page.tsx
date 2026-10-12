@@ -53,6 +53,7 @@ export default function WalletPage() {
   const [selectedAsset, setSelectedAsset] = useState<'BTC' | 'B2B' | 'USDT' | null>(null);
   const [showDepositDialog, setShowDepositDialog] = useState(false);
   const [showWithdrawDialog, setShowWithdrawDialog] = useState(false);
+  const [showWithdrawAuthDialog, setShowWithdrawAuthDialog] = useState(false);
   const [showTransferDialog, setShowTransferDialog] = useState(false);
   const [showPowerRestrictionDialog, setShowPowerRestrictionDialog] = useState(false);
   const [recipientUsername, setRecipientUsername] = useState("");
@@ -405,6 +406,7 @@ export default function WalletPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
       queryClient.invalidateQueries({ queryKey: ["/api/withdrawals/cooldown"] });
       queryClient.invalidateQueries({ queryKey: ["/api/wallet/balances"] });
+      setShowWithdrawAuthDialog(false);
       setShowWithdrawDialog(false);
       setWithdrawAmount("");
       setWithdrawAddress("");
@@ -546,6 +548,14 @@ export default function WalletPage() {
       return;
     }
 
+    // Amount and address are valid: collect the security credentials in a confirmation popup.
+    setWithdrawPin("");
+    setWithdraw2fa("");
+    setShowWithdrawAuthDialog(true);
+  };
+
+  // Authorize and submit the withdrawal with the credentials entered in the confirmation popup
+  const handleConfirmWithdraw = () => {
     if (!withdrawPin || withdrawPin.length !== 6) {
       toast({
         title: "Security PIN Required",
@@ -563,7 +573,7 @@ export default function WalletPage() {
       });
       return;
     }
-    
+
     withdrawMutation.mutate({
       amount: withdrawAmount,
       address: withdrawAddress,
@@ -1348,7 +1358,7 @@ export default function WalletPage() {
               </Button>
             </div>
             
-            <div className="flex-1 p-4 space-y-4">
+            <div className="flex-1 p-4 pb-24 space-y-4">
               {/* Amount Input */}
               <div className="bg-[#242424] rounded-lg p-4">
                 <Label htmlFor="withdraw-amount" className="text-gray-400 text-sm">Amount</Label>
@@ -1384,47 +1394,6 @@ export default function WalletPage() {
                   data-testid="input-withdraw-address"
                 />
               </div>
-              
-              {/* Security PIN Input */}
-              <div className="bg-[#242424] rounded-lg p-4">
-                <Label htmlFor="withdraw-pin" className="text-gray-400 text-sm">
-                  Security PIN (6 digits) *
-                </Label>
-                <Input
-                  id="withdraw-pin"
-                  type="password"
-                  inputMode="numeric"
-                  maxLength={6}
-                  value={withdrawPin}
-                  onChange={(e) => setWithdrawPin(e.target.value.replace(/\D/g, ''))}
-                  placeholder="Enter 6-digit PIN"
-                  className="bg-[#1a1a1a] border-gray-700 text-white placeholder:text-gray-600 font-mono text-sm tracking-widest mt-2"
-                  data-testid="input-withdraw-pin"
-                />
-                <p className="text-xs text-gray-500 mt-2">
-                  Required to authorize this withdrawal. Set or change it in Account settings.
-                </p>
-              </div>
-
-              {/* 2FA Code Input (only when enabled) */}
-              {user?.twoFactorEnabled && (
-                <div className="bg-[#242424] rounded-lg p-4">
-                  <Label htmlFor="withdraw-2fa" className="text-gray-400 text-sm">
-                    Authenticator Code (6 digits) *
-                  </Label>
-                  <Input
-                    id="withdraw-2fa"
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={6}
-                    value={withdraw2fa}
-                    onChange={(e) => setWithdraw2fa(e.target.value.replace(/\D/g, ''))}
-                    placeholder="Enter 6-digit 2FA code"
-                    className="bg-[#1a1a1a] border-gray-700 text-white placeholder:text-gray-600 font-mono text-sm tracking-widest mt-2"
-                    data-testid="input-withdraw-2fa"
-                  />
-                </div>
-              )}
               
               {/* Withdrawal Information */}
               <div className="bg-[#242424] rounded-lg p-4">
@@ -1493,6 +1462,105 @@ export default function WalletPage() {
         </div>
       </div>
     )}
+
+      {/* Withdraw Authorization Dialog (PIN + 2FA collected on submit) */}
+      <Dialog
+        open={showWithdrawAuthDialog}
+        onOpenChange={(open) => {
+          if (!open) {
+            setShowWithdrawAuthDialog(false);
+            setWithdrawPin("");
+            setWithdraw2fa("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md bg-[#242424] border-gray-800">
+          <DialogHeader>
+            <DialogTitle className="text-white font-medium">
+              Confirm Withdrawal
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="flex justify-between items-center bg-[#1a1a1a] rounded-lg p-3 text-sm">
+              <span className="text-gray-400">Amount</span>
+              <span className="text-white font-mono">
+                {safeParseFloat(withdrawAmount).toFixed(selectedAsset === 'USDT' ? 2 : 8)} {selectedAsset}
+              </span>
+            </div>
+
+            <div>
+              <Label htmlFor="withdraw-auth-pin" className="text-gray-400 text-sm">
+                Security PIN (6 digits) *
+              </Label>
+              <Input
+                id="withdraw-auth-pin"
+                type="password"
+                inputMode="numeric"
+                maxLength={6}
+                value={withdrawPin}
+                onChange={(e) => setWithdrawPin(e.target.value.replace(/\D/g, ''))}
+                placeholder="Enter 6-digit PIN"
+                className="bg-[#1a1a1a] border-gray-700 text-white placeholder:text-gray-600 font-mono tracking-widest mt-2"
+                data-testid="input-withdraw-auth-pin"
+              />
+            </div>
+
+            {user?.twoFactorEnabled && (
+              <div>
+                <Label htmlFor="withdraw-auth-2fa" className="text-gray-400 text-sm">
+                  Authenticator Code (6 digits) *
+                </Label>
+                <Input
+                  id="withdraw-auth-2fa"
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={withdraw2fa}
+                  onChange={(e) => setWithdraw2fa(e.target.value.replace(/\D/g, ''))}
+                  placeholder="Enter 6-digit 2FA code"
+                  className="bg-[#1a1a1a] border-gray-700 text-white placeholder:text-gray-600 font-mono tracking-widest mt-2"
+                  data-testid="input-withdraw-auth-2fa"
+                />
+              </div>
+            )}
+
+            <p className="text-xs text-gray-500">
+              Your security PIN{user?.twoFactorEnabled ? ' and authenticator code' : ''} authorize this withdrawal.
+              Set or change your PIN in Account settings.
+            </p>
+
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setShowWithdrawAuthDialog(false);
+                  setWithdrawPin("");
+                  setWithdraw2fa("");
+                }}
+                className="flex-1 border-gray-700 text-gray-300 hover:bg-[#2a2a2a] hover:text-white"
+                data-testid="button-cancel-withdraw-auth"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleConfirmWithdraw}
+                disabled={withdrawMutation.isPending}
+                className="flex-1 font-medium bg-[#f7931a] hover:bg-[#e88309] text-black disabled:opacity-50"
+                data-testid="button-authorize-withdraw"
+              >
+                {withdrawMutation.isPending ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                    Processing...
+                  </>
+                ) : (
+                  'Confirm Withdrawal'
+                )}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Transfer Dialog (B2B only) */}
       <Dialog open={showTransferDialog} onOpenChange={setShowTransferDialog}>

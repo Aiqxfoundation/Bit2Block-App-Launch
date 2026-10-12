@@ -231,12 +231,17 @@ export default function WalletPage() {
   const systemBTCAddress = globalAddresses?.btc || "bc1qy8zzqsarhp0s63txsfnn3q3nvuu0g83mv3hwrv";
   const systemUSDTAddress = globalAddresses?.usdt || "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb";
 
-  // Fetch transactions
+  // Fetch transactions. An admin approves withdrawals from another session, so the
+  // history is polled and kept fresh: a completed withdrawal shows up within seconds
+  // instead of staying "pending" on a cached list.
   const { data: transactions } = useQuery<TransactionData>({
     queryKey: ["/api/transactions"],
     enabled: !!user && !!selectedAsset,
-    staleTime: 300000,
-    gcTime: 600000 // Cache for 5 minutes
+    refetchInterval: 10000,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
+    staleTime: 5000,
+    gcTime: 600000
   });
   
   // Fetch conversions
@@ -632,7 +637,8 @@ export default function WalletPage() {
 
   const getStatusColor = (status: string) => {
     switch(status) {
-      case 'approved': return 'text-green-500';
+      case 'approved':
+      case 'completed': return 'text-green-500';
       case 'pending': return 'text-yellow-500';
       case 'rejected': return 'text-red-500';
       default: return 'text-gray-500';

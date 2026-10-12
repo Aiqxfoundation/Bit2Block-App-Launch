@@ -96,7 +96,7 @@ export default function WithdrawPage() {
       setAddress('');
       setSecurityPin('');
       setTwoFactorCode('');
-      queryClient.invalidateQueries({ queryKey: ["/api/withdrawals"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
       queryClient.invalidateQueries({ queryKey: ["/api/user"] });
       refetchCooldown();
     },
@@ -203,10 +203,18 @@ export default function WithdrawPage() {
     });
   };
 
-  // Query pending withdrawals
-  const { data: pendingWithdrawals } = useQuery<any[]>({
-    queryKey: ["/api/withdrawals/pending"]
+  // Show the signed-in user's own pending withdrawals. /api/withdrawals/pending is
+  // admin-only, so read the user's transactions; polling clears the entry as soon as
+  // an admin approves the request.
+  const { data: transactions } = useQuery<{ withdrawals: any[] }>({
+    queryKey: ["/api/transactions"],
+    refetchInterval: 10000,
+    refetchOnWindowFocus: true,
+    staleTime: 5000
   });
+  const pendingWithdrawals = (transactions?.withdrawals || []).filter(
+    (withdrawal: any) => withdrawal.status === "pending"
+  );
 
   return (
     <div className="mobile-page min-h-screen overflow-x-hidden">

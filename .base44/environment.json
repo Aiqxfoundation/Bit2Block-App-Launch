@@ -1,0 +1,13 @@
+{
+  "previewPort": 3000,
+  "healthPath": "/api/healthz",
+  "startCommand": "docker compose -f docker-compose.base44.yml up -d",
+  "secrets": [
+    {
+      "name": "SESSION_SECRET",
+      "description": "Express session signing key for the BIT2BLOCK API (required at boot; the server refuses to start without it). A development placeholder was generated automatically — set a strong random value for any real deployment.",
+      "requiredAtBoot": true,
+      "generatedForDevelopment": true
+    }
+  ]
+}

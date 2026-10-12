@@ -1,0 +1,90 @@
+# Base44 sandbox environment for the BIT2BLOCK app.
+#
+# The runnable application lives in artifacts/bit2block: a single Express server
+# (server/) that serves the React client (client/) through Vite middleware in
+# development and exposes the JSON API under /api on the same origin.
+#
+# Only the web entry point is published (host port 3000). Postgres runs as a
+# plain compose service. The app is served from the bind-mounted checkout with
+# live reload, so source edits appear without rebuilding any image.
+name: bit2block
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: on-failure
+    environment:
+      POSTGRES_USER: bit2block
+      POSTGRES_PASSWORD: bit2block_dev_password
+      POSTGRES_DB: bit2block
+    volumes:
+      - bit2block-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bit2block -d bit2block"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # One-shot schema sync. artifacts/bit2block/shared/schema.ts is the source of
+  # truth for the database (the checked-in SQL migrations are only partially
+  # journaled), so the schema is pushed with drizzle-kit rather than migrated.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.base44
+    working_dir: /app
+    volumes:
+      - .:/app
+    environment:
+      CI: "true"
+      DATABASE_URL: postgres://bit2block:bit2block_dev_password@db:5432/bit2block
+    depends_on:
+      db:
+        condition: service_healthy
+    command:
+      - sh
+      - -ec
+      - pnpm install --frozen-lockfile && pnpm --filter @workspace/bit2block exec drizzle-kit push --force
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.base44
+    restart: on-failure
+    working_dir: /app
+    volumes:
+      - .:/app
+    ports:
+      - "3000:3000"
+    # Placeholders first, platform-provided secrets last so the dashboard value wins.
+    env_file:
+      - ./.env.base44-defaults
+      - /run/base44/app.env
+    environment:
+      PORT: "3000"
+      # Development mode: Vite middleware serving client/, plaintext session
+      # cookie, and no TLS requirement on the local Postgres connection.
+      NODE_ENV: "development"
+      DATABASE_URL: postgres://bit2block:bit2block_dev_password@db:5432/bit2block
+      BASE44_PREVIEW_MODE:
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # tsx watch restarts the server on backend edits; Vite middleware handles
+    # client HMR. Both are required for the sandbox edit loop.
+    command:
+      - sh
+      - -ec
+      - CI=true pnpm install --frozen-lockfile && exec pnpm --filter @workspace/bit2block exec tsx watch server/index.ts
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/api/healthz || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+
+volumes:
+  bit2block-pgdata:

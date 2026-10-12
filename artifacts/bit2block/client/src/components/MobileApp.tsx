@@ -25,6 +25,7 @@ import UserProfile from "@/pages/admin/UserProfile";
 import TransactionsPage from "@/pages/transactions-page";
 import ReferralPage from "@/pages/referral-page";
 import Whitepaper from "@/pages/whitepaper";
+import DocsPage from "@/pages/docs-page";
 import GlobalPage from "@/pages/global-page";
 import BtcMiningPage from "@/pages/btc-mining";
 import { ProtectedRoute } from "@/lib/protected-route";
@@ -151,6 +152,10 @@ export default function MobileApp() {
           <ProtectedRoute path="/referral" component={ReferralPage} />
           <ProtectedRoute path="/referrals" component={ReferralPage} />
           <Route path="/whitepaper" component={Whitepaper} />
+          <Route path="/docs" component={DocsPage} />
+          <Route path="/mining-guide" component={DocsPage} />
+          <Route path="/knowledge" component={DocsPage} />
+          <Route path="/privacy" component={DocsPage} />
           <Route path="/global" component={GlobalPage} />
           <Route path="/global-info" component={GlobalPage} />
           <Route path="/ref/:code" component={RefRedirectHandler} />

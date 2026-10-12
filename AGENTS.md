@@ -62,6 +62,14 @@ Username + generated B2B access key (`/api/register`, `/api/login`), session sto
 Postgres `session` table. `req.isAuthenticated()` is a hand-rolled polyfill, not Passport.
 Registering issues an access key that is only shown once.
 
+**Second factor = TOTP 2FA only.** The legacy 6-digit "security PIN" was removed
+(`/api/change-pin`, `/api/verify-pin`, and every PIN check in withdrawals/transfers/2FA
+disable are gone; `users.security_pin` still exists in the schema but is unused, and
+`serializeUserForClient` no longer emits `securityPin`). Withdrawals require a TOTP code
+only when the user has 2FA enabled. The Account page (`/account`) is a profile + security
+page — the purchase-gated referral code/slot tabs that used to live there are gone, and the
+referral code, team list and commission details are on `/referral`.
+
 ## Verifying a change
 
 1. `curl -s localhost:3000/api/healthz` → `{"ok":true,"database":"connected"}`.

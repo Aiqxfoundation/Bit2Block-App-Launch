@@ -19,11 +19,9 @@ import {
   QrCode, 
   Activity, 
   Zap, 
-  ArrowRight,
   ShieldCheck,
   CheckCircle2
 } from "lucide-react";
-import { Link } from "wouter";
 
 export default function ReferralPage() {
   const { user } = useAuth();
@@ -246,11 +244,6 @@ export default function ReferralPage() {
               <Activity className="w-3.5 h-3.5 text-[#f7931a]" />
               Referral Team ({referralsList.length})
             </h3>
-            <Link href="/account">
-              <span className="text-[11px] text-[#f7931a] hover:underline cursor-pointer flex items-center gap-1">
-                Account Slots <ArrowRight className="w-3 h-3" />
-              </span>
-            </Link>
           </div>
 
           {referralsList.length === 0 ? (

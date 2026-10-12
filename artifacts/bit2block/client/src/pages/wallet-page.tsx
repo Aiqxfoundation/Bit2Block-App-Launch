@@ -59,6 +59,8 @@ export default function WalletPage() {
   const [transferAmount, setTransferAmount] = useState("");
   const [withdrawAmount, setWithdrawAmount] = useState("");
   const [withdrawAddress, setWithdrawAddress] = useState("");
+  const [withdrawPin, setWithdrawPin] = useState("");
+  const [withdraw2fa, setWithdraw2fa] = useState("");
   const [depositAmount, setDepositAmount] = useState("");
   const [depositTxHash, setDepositTxHash] = useState("");
   const [copiedAddress, setCopiedAddress] = useState(false);
@@ -77,7 +79,7 @@ export default function WalletPage() {
     currency: string;
   } | null>(null);
   const [cooldownTimeRemaining, setCooldownTimeRemaining] = useState<string>('');
-  const [selectedChain, setSelectedChain] = useState<'ERC20' | 'BSC'>('ERC20');
+  const [selectedChain, setSelectedChain] = useState<'ERC20' | 'BSC'>('BSC');
 
   // Mutation to assign a deposit address
   const assignAddressMutation = useMutation({
@@ -383,11 +385,13 @@ export default function WalletPage() {
   });
 
   const withdrawMutation = useMutation({
-    mutationFn: async (data: { amount: string; address: string; network?: string }) => {
+    mutationFn: async (data: { amount: string; address: string; securityPin: string; twoFactorCode?: string }) => {
       const res = await apiRequest("POST", "/api/withdrawals", {
         amount: data.amount,
         address: data.address,
-        network: selectedAsset === 'USDT' ? 'ERC20' : selectedAsset === 'BTC' ? 'BTC' : 'B2B'
+        network: selectedAsset === 'USDT' ? 'BSC' : selectedAsset === 'BTC' ? 'BTC' : 'B2B',
+        securityPin: data.securityPin,
+        twoFactorCode: data.twoFactorCode
       });
       return res.json();
     },
@@ -404,6 +408,8 @@ export default function WalletPage() {
       setShowWithdrawDialog(false);
       setWithdrawAmount("");
       setWithdrawAddress("");
+      setWithdrawPin("");
+      setWithdraw2fa("");
     },
     onError: (error: Error) => {
       toast({ 
@@ -520,7 +526,7 @@ export default function WalletPage() {
     
     const amount = safeParseFloat(withdrawAmount);
     const maxAmount = selectedAsset === 'B2B' ? gbtcBalance : usdtBalance;
-    const minWithdrawal = selectedAsset === 'B2B' ? 0.01 : selectedAsset === 'BTC' ? 0.001 : 100; // 100 USDT minimum
+    const minWithdrawal = selectedAsset === 'B2B' ? 0.01 : selectedAsset === 'BTC' ? 0.001 : 50; // 50 USDT minimum (matches UI)
     
     if (amount < minWithdrawal) {
       toast({ 
@@ -539,8 +545,31 @@ export default function WalletPage() {
       });
       return;
     }
+
+    if (!withdrawPin || withdrawPin.length !== 6) {
+      toast({
+        title: "Security PIN Required",
+        description: "Please enter your 6-digit security PIN to authorize this withdrawal.",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    if (user?.twoFactorEnabled && (!withdraw2fa || withdraw2fa.length !== 6)) {
+      toast({
+        title: "2FA Code Required",
+        description: "Please enter your 6-digit authenticator code.",
+        variant: "destructive"
+      });
+      return;
+    }
     
-    withdrawMutation.mutate({ amount: withdrawAmount, address: withdrawAddress });
+    withdrawMutation.mutate({
+      amount: withdrawAmount,
+      address: withdrawAddress,
+      securityPin: withdrawPin.trim(),
+      twoFactorCode: withdraw2fa ? withdraw2fa.trim() : undefined
+    });
   };
 
   const handleTransfer = () => {
@@ -1106,11 +1135,11 @@ export default function WalletPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent className="bg-[#242424] border-gray-700">
+                      <SelectItem value="BSC" className="text-white hover:bg-[#2a2a2a]">
+                        Binance Smart Chain (BSC / BEP20)
+                      </SelectItem>
                       <SelectItem value="ERC20" className="text-white hover:bg-[#2a2a2a]">
                         Ethereum (ERC20)
-                      </SelectItem>
-                      <SelectItem value="BSC" className="text-white hover:bg-[#2a2a2a]">
-                        Binance Smart Chain (BSC)
                       </SelectItem>
                     </SelectContent>
                   </Select>
@@ -1304,7 +1333,13 @@ export default function WalletPage() {
                 Withdraw {selectedAsset}
               </h2>
               <Button
-                onClick={() => setShowWithdrawDialog(false)}
+                onClick={() => {
+                  setShowWithdrawDialog(false);
+                  setWithdrawAmount("");
+                  setWithdrawAddress("");
+                  setWithdrawPin("");
+                  setWithdraw2fa("");
+                }}
                 variant="ghost"
                 size="sm"
                 className="text-gray-400 hover:text-white p-1"
@@ -1338,7 +1373,7 @@ export default function WalletPage() {
               {/* Address Input */}
               <div className="bg-[#242424] rounded-lg p-4">
                 <Label htmlFor="withdraw-address" className="text-gray-400 text-sm">
-                  Wallet Address {selectedAsset === 'USDT' && '(ERC20 Network)'}
+                  Wallet Address {selectedAsset === 'USDT' && '(BSC Network)'}
                 </Label>
                 <Input
                   id="withdraw-address"
@@ -1349,6 +1384,47 @@ export default function WalletPage() {
                   data-testid="input-withdraw-address"
                 />
               </div>
+              
+              {/* Security PIN Input */}
+              <div className="bg-[#242424] rounded-lg p-4">
+                <Label htmlFor="withdraw-pin" className="text-gray-400 text-sm">
+                  Security PIN (6 digits) *
+                </Label>
+                <Input
+                  id="withdraw-pin"
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={withdrawPin}
+                  onChange={(e) => setWithdrawPin(e.target.value.replace(/\D/g, ''))}
+                  placeholder="Enter 6-digit PIN"
+                  className="bg-[#1a1a1a] border-gray-700 text-white placeholder:text-gray-600 font-mono text-sm tracking-widest mt-2"
+                  data-testid="input-withdraw-pin"
+                />
+                <p className="text-xs text-gray-500 mt-2">
+                  Required to authorize this withdrawal. Set or change it in Account settings.
+                </p>
+              </div>
+
+              {/* 2FA Code Input (only when enabled) */}
+              {user?.twoFactorEnabled && (
+                <div className="bg-[#242424] rounded-lg p-4">
+                  <Label htmlFor="withdraw-2fa" className="text-gray-400 text-sm">
+                    Authenticator Code (6 digits) *
+                  </Label>
+                  <Input
+                    id="withdraw-2fa"
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={6}
+                    value={withdraw2fa}
+                    onChange={(e) => setWithdraw2fa(e.target.value.replace(/\D/g, ''))}
+                    placeholder="Enter 6-digit 2FA code"
+                    className="bg-[#1a1a1a] border-gray-700 text-white placeholder:text-gray-600 font-mono text-sm tracking-widest mt-2"
+                    data-testid="input-withdraw-2fa"
+                  />
+                </div>
+              )}
               
               {/* Withdrawal Information */}
               <div className="bg-[#242424] rounded-lg p-4">
@@ -1375,7 +1451,7 @@ export default function WalletPage() {
                   {selectedAsset === 'USDT' && (
                     <div className="flex justify-between text-xs">
                       <span className="text-gray-500">Network:</span>
-                      <span className="text-gray-300">ERC20 (Ethereum)</span>
+                      <span className="text-gray-300">BSC (BNB Smart Chain)</span>
                     </div>
                   )}
                 </div>

@@ -135,7 +135,7 @@ export default function WithdrawPage() {
     if (!address.match(/^0x[a-fA-F0-9]{40}$/)) {
       toast({ 
         title: "Invalid Address", 
-        description: "Please enter a valid ERC20 wallet address.", 
+        description: "Please enter a valid BSC wallet address.", 
         variant: "destructive" 
       });
       return;
@@ -182,7 +182,7 @@ export default function WithdrawPage() {
     createWithdrawalMutation.mutate({
       amount: withdrawAmount.toString(),
       address: address.trim(),
-      network: 'ERC20',
+      network: 'BSC',
       securityPin: securityPin.trim(),
       twoFactorCode: twoFactorCode ? twoFactorCode.trim() : undefined
     });
@@ -226,7 +226,7 @@ export default function WithdrawPage() {
                 data-testid="input-withdraw-address"
               />
               <p className="text-[10px] text-muted-foreground mt-1">
-                ERC20 (Ethereum) network only
+                BSC (Binance Smart Chain / BEP20) network only
               </p>
             </div>
 

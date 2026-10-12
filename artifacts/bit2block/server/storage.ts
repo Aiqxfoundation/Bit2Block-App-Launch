@@ -62,6 +62,8 @@ import connectPg from "connect-pg-simple";
 import { pool } from "./db";
 
 const PostgresSessionStore = connectPg(session);
+const PRIMARY_ADMIN_SETTING_KEY = "primaryAdminUserId";
+const PRIMARY_ADMIN_LOCK_NAMESPACE = 31852;
 
 export interface IStorage {
   // User methods
@@ -70,6 +72,7 @@ export interface IStorage {
   getUserByAccessKey(accessKey: string): Promise<User | undefined>;
   getUsersByReferralCode(referralCode: string): Promise<User[]>;
   findUserByOwnReferralCode(referralCode: string): Promise<User | null>;
+  ensurePrimaryAdmin(): Promise<void>;
   createUser(user: InsertUser): Promise<User>;
   hasIpRegistered(ip: string): Promise<boolean>;
   updateUserBalance(userId: string, usdtBalance: string, hashPower: string, b2bBalance: string, unclaimedBalance: string): Promise<void>;
@@ -301,18 +304,109 @@ export class DatabaseStorage implements IStorage {
     return result[0] || null;
   }
 
+  async ensurePrimaryAdmin(): Promise<void> {
+    await db.transaction(async (tx: any) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${PRIMARY_ADMIN_LOCK_NAMESPACE}, 1)`);
+
+      const [claim] = await tx
+        .select({ value: systemSettings.value })
+        .from(systemSettings)
+        .where(eq(systemSettings.key, PRIMARY_ADMIN_SETTING_KEY))
+        .limit(1)
+        .for("update");
+
+      let primaryAdminId = claim?.value;
+      if (!primaryAdminId) {
+        const [firstUser] = await tx
+          .select({ id: users.id })
+          .from(users)
+          .orderBy(asc(users.createdAt), asc(users.id))
+          .limit(1);
+
+        if (!firstUser) return;
+        primaryAdminId = firstUser.id;
+        await tx
+          .insert(systemSettings)
+          .values({ key: PRIMARY_ADMIN_SETTING_KEY, value: primaryAdminId })
+          .onConflictDoNothing();
+      }
+
+      await tx
+        .update(users)
+        .set({ isAdmin: false })
+        .where(sql`${users.isAdmin} IS TRUE AND ${users.id} <> ${primaryAdminId}`);
+      await tx
+        .update(users)
+        .set({ isAdmin: true })
+        .where(eq(users.id, primaryAdminId));
+    });
+  }
+
   async createUser(insertUser: InsertUser): Promise<User> {
-    const [user] = await db
-      .insert(users)
-      .values({
-        ...insertUser,
-        // The free starter is owned from registration; mining activation only starts earning.
-        hashPower: "0.10",
-        baseHashPower: "0.10",
-        freeStarterGranted: insertUser.freeStarterGranted ?? true,
-      })
-      .returning();
-    return user;
+    return db.transaction(async (tx: any) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${PRIMARY_ADMIN_LOCK_NAMESPACE}, 1)`);
+
+      const [claim] = await tx
+        .select({ value: systemSettings.value })
+        .from(systemSettings)
+        .where(eq(systemSettings.key, PRIMARY_ADMIN_SETTING_KEY))
+        .limit(1)
+        .for("update");
+      let primaryAdminId = claim?.value;
+
+      if (!primaryAdminId) {
+        const [firstUser] = await tx
+          .select({ id: users.id })
+          .from(users)
+          .orderBy(asc(users.createdAt), asc(users.id))
+          .limit(1);
+
+        if (firstUser) {
+          primaryAdminId = firstUser.id;
+          await tx
+            .insert(systemSettings)
+            .values({ key: PRIMARY_ADMIN_SETTING_KEY, value: primaryAdminId })
+            .onConflictDoNothing();
+          await tx
+            .update(users)
+            .set({ isAdmin: true })
+            .where(eq(users.id, primaryAdminId));
+        }
+      }
+
+      if (primaryAdminId) {
+        await tx
+          .update(users)
+          .set({ isAdmin: false })
+          .where(sql`${users.isAdmin} IS TRUE AND ${users.id} <> ${primaryAdminId}`);
+        await tx
+          .update(users)
+          .set({ isAdmin: true })
+          .where(eq(users.id, primaryAdminId));
+      }
+
+      const receivesFirstAdminRole = !primaryAdminId;
+      const [user] = await tx
+        .insert(users)
+        .values({
+          ...insertUser,
+          isAdmin: receivesFirstAdminRole,
+          // The free starter is owned from registration; mining activation only starts earning.
+          hashPower: "0.10",
+          baseHashPower: "0.10",
+          freeStarterGranted: insertUser.freeStarterGranted ?? true,
+        })
+        .returning();
+
+      if (receivesFirstAdminRole) {
+        await tx
+          .insert(systemSettings)
+          .values({ key: PRIMARY_ADMIN_SETTING_KEY, value: user.id })
+          .onConflictDoNothing();
+      }
+
+      return user;
+    });
   }
 
   async hasIpRegistered(ip: string): Promise<boolean> {
@@ -741,6 +835,10 @@ export class DatabaseStorage implements IStorage {
   }
 
   async setSystemSetting(key: string, value: string): Promise<void> {
+    if (key === PRIMARY_ADMIN_SETTING_KEY) {
+      throw new Error("The primary administrator claim is reserved.");
+    }
+
     await db
       .insert(systemSettings)
       .values({ key, value })

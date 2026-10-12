@@ -1,6 +1,6 @@
 import express, { type NextFunction, type Request, type Response } from "express";
 import { registerRoutes } from "./routes";
-import { initStorage } from "./storage";
+import { initStorage, storage } from "./storage";
 import { pool } from "./db";
 
 export async function createServerApp() {
@@ -9,6 +9,7 @@ export async function createServerApp() {
   app.use(express.urlencoded({ extended: false }));
 
   await initStorage();
+  await storage.ensurePrimaryAdmin();
 
   app.get("/api/healthz", async (_req, res) => {
     try {

@@ -1,0 +1,442 @@
+import { type Express, type RequestHandler } from "express";
+import session from "express-session";
+import { randomBytes, scrypt } from "crypto";
+import { promisify } from "util";
+
+const asyncScrypt = promisify(scrypt);
+import { storage } from "./storage";
+import { User as SelectUser } from "@shared/schema";
+import { 
+  checkLoginRateLimit, 
+  recordFailedLogin, 
+  resetLoginAttempts, 
+  checkRegistrationRateLimit, 
+  verifyTotpToken 
+} from "./security";
+
+declare global {
+  namespace Express {
+    interface User extends SelectUser {}
+    interface Request {
+      user?: SelectUser;
+      isAuthenticated(): boolean;
+    }
+  }
+}
+
+declare module 'express-session' {
+  interface SessionData {
+    userId?: string;
+  }
+}
+
+// Get client IP address helper function
+function getClientIp(req: any): string {
+  return req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+         req.headers['x-real-ip'] ||
+         req.connection?.remoteAddress ||
+         req.socket?.remoteAddress ||
+         req.ip ||
+         'unknown';
+}
+
+
+// Generate unique access key in format B2B-XXXXX-XXXXX-XXXXX-XXXXX
+export function generateUniqueAccessKey(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  const segments = [];
+  
+  for (let i = 0; i < 4; i++) {
+    let segment = '';
+    const randomBytesBuffer = randomBytes(5); // 5 bytes for 5 chars
+    for (let j = 0; j < 5; j++) {
+      const randomIndex = randomBytesBuffer[j] % chars.length;
+      segment += chars.charAt(randomIndex);
+    }
+    segments.push(segment);
+  }
+  
+  return `B2B-${segments.join('-')}`;
+}
+
+// Hash access key for secure storage
+export async function hashAccessKey(accessKey: string): Promise<string> {
+  const salt = randomBytes(16);
+  const hash = await asyncScrypt(accessKey, salt, 32) as Buffer;
+  return `${salt.toString('hex')}:${hash.toString('hex')}`;
+}
+
+// Verify access key against stored hash
+export async function verifyAccessKey(accessKey: string, hashedKey: string): Promise<boolean> {
+  try {
+    const [saltHex, hashHex] = hashedKey.split(':');
+    if (!saltHex || !hashHex) return false;
+    
+    const salt = Buffer.from(saltHex, 'hex');
+    const hash = await asyncScrypt(accessKey, salt, 32) as Buffer;
+    return hash.toString('hex') === hashHex;
+  } catch {
+    return false;
+  }
+}
+
+export function serializeUserForClient(user: SelectUser) {
+  const {
+    accessKey: _accessKey,
+    securityPin: _securityPin,
+    twoFactorSecret: _twoFactorSecret,
+    registrationIp: _registrationIp,
+    ...safeUser
+  } = user;
+  return { ...safeUser, securityPin: Boolean(_securityPin) };
+}
+
+export function setupAuth(app: Express) {
+  if (!process.env.SESSION_SECRET) {
+    throw new Error("SESSION_SECRET is required; refusing to start with a predictable session secret.");
+  }
+
+  const sessionSettings: session.SessionOptions = {
+    secret: process.env.SESSION_SECRET,
+    store: storage.sessionStore,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax'
+    }
+  };
+
+  app.set("trust proxy", 1);
+  app.use(session(sessionSettings) as unknown as RequestHandler);
+
+  // Polyfill req.isAuthenticated() since we're not using Passport
+  app.use((req, _res, next) => {
+    req.isAuthenticated = () => Boolean(req.session?.userId && req.user);
+    next();
+  });
+
+  // Helper middleware to set user on request
+  app.use((req, res, next) => {
+    if (req.session?.userId) {
+      storage.getUser(req.session.userId).then(user => {
+        if (user) {
+          req.user = user;
+        }
+        next();
+      }).catch(() => next());
+    } else {
+      next();
+    }
+  });
+
+  // Registration endpoint - generates unique access key
+  app.post("/api/register", async (req, res, next) => {
+    try {
+      const { username, referralUsername, referredBy: bodyReferredBy, deviceData } = req.body;
+      const clientIp = getClientIp(req);
+
+      if (!checkRegistrationRateLimit(clientIp)) {
+        return res.status(429).json({ message: "Registration limit exceeded. Please wait before registering again." });
+      }
+      
+      if (!username) {
+        return res.status(400).json({ message: "Please enter a valid username to create your account." });
+      }
+      
+      // Check device fingerprint first (before creating user)
+      if (!deviceData || !deviceData.serverDeviceId || !deviceData.fingerprints) {
+        return res.status(400).json({ 
+          message: "Device verification is required for registration. Please refresh the page and try again." 
+        });
+      }
+
+      // Check if device can register
+      const deviceResult = await storage.upsertDevice({
+        serverDeviceId: deviceData.serverDeviceId,
+        lastIp: getClientIp(req),
+        fingerprints: deviceData.fingerprints
+      });
+
+      // CRITICAL SECURITY: Enforce device registration constraints
+      if (!deviceResult.canRegister) {
+        if (deviceResult.device.blocked) {
+          return res.status(403).json({ 
+            message: "This device has been restricted from creating new accounts due to suspicious activity." 
+          });
+        } else if (deviceResult.device.registrations && deviceResult.device.registrations > 0) {
+          return res.status(403).json({ 
+            message: "An account has already been created from this device. Each device can only be used to register one account." 
+          });
+        } else {
+          return res.status(403).json({ 
+            message: "This device is not eligible for registration at this time." 
+          });
+        }
+      }
+
+      // Generate unique access key
+      const accessKey = generateUniqueAccessKey();
+
+      const existingUser = await storage.getUserByUsername(username);
+      if (existingUser) {
+        return res.status(400).json({ message: "This username is already taken. Please choose a different username." });
+      }
+
+      // Generate unique hash-style referral code (8 characters, alphanumeric)
+      const generateReferralCode = () => {
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz';
+        const codeBytes = randomBytes(6); // Use crypto for secure random generation
+        let code = '';
+        // Generate a more hash-like code with mixed case
+        for (let i = 0; i < 6; i++) {
+          code += chars.charAt(codeBytes[i] % chars.length);
+        }
+        // Add timestamp component for uniqueness
+        const timestamp = Date.now().toString(36).slice(-2).toUpperCase();
+        return code + timestamp;
+      };
+
+      // Validate referral code or username
+      let validatedReferredBy: string | undefined = undefined;
+      const rawReferralInput = (referralUsername || bodyReferredBy || '').trim();
+      let matchedReferralCodeObj: any = null;
+      
+      if (rawReferralInput) {
+        // 1. Try finding by username
+        let referrer: SelectUser | null | undefined = await storage.getUserByUsername(rawReferralInput);
+        
+        // 2. If not found by username, try finding by user's own referral code
+        if (!referrer) {
+          referrer = await storage.findUserByOwnReferralCode(rawReferralInput);
+        }
+        
+        // 3. If still not found, check single-use referral codes table
+        if (!referrer) {
+          const codeObj = await storage.getReferralCodeByCode(rawReferralInput);
+          if (codeObj) {
+            matchedReferralCodeObj = codeObj;
+            referrer = (await storage.getUser(codeObj.ownerId)) || null;
+          }
+        }
+        
+        if (!referrer) {
+          return res.status(400).json({ 
+            message: `Invalid Referral: The referral code or username '${rawReferralInput}' does not exist in our system. Please verify and ensure it is entered correctly.` 
+          });
+        }
+        
+        // Use the canonical referrer username
+        validatedReferredBy = referrer.username;
+      }
+
+
+      // Hash the access key for secure storage
+      const hashedAccessKey = await hashAccessKey(accessKey);
+      
+      const user = await storage.createUser({
+        username,
+        accessKey: hashedAccessKey,
+        referralCode: generateReferralCode(),
+        referredBy: validatedReferredBy,
+        registrationIp: getClientIp(req),
+        // Note: hashPower and baseHashPower will be set by database defaults
+      } as any);
+
+      // Do NOT auto-login after registration — the user must save their access key
+      // and explicitly log in. The session is only set by the /api/login endpoint.
+      
+      // Link device to user after successful registration
+      if (deviceData) {
+        const deviceResult = await storage.upsertDevice({
+          serverDeviceId: deviceData.serverDeviceId,
+          lastIp: getClientIp(req),
+          fingerprints: deviceData.fingerprints
+        });
+        await storage.linkUserToDevice(user.id, deviceResult.device.id);
+      }
+      
+      if (matchedReferralCodeObj) {
+        await storage.markReferralCodeUsed(matchedReferralCodeObj.code, user.id);
+      }
+      
+      // Return user data with the plain access key (only time it's shown)
+      res.status(201).json({ ...serializeUserForClient(user), accessKey });
+    } catch (error: any) {
+      if (error?.message?.includes('endpoint has been disabled') || error?.code === 'XX000') {
+        return res.status(503).json({ message: "Our system is currently updating. Please try creating your account again in a few moments." });
+      }
+      if (error.message?.includes('duplicate key value violates unique constraint')) {
+        if (error.message.includes('access_key')) {
+          return res.status(400).json({ message: "A technical error occurred during registration. Please try again with a different username." });
+        }
+        return res.status(400).json({ message: "This username is already taken. Please choose a different username." });
+      }
+      next(error);
+    }
+  });
+
+  // Check if IP has already created an account
+  app.get("/api/check-ip-registration", async (req, res) => {
+    try {
+
+      const clientIp = getClientIp(req);
+      const hasRegistered = await storage.hasIpRegistered(clientIp);
+      
+      res.json({ hasRegistered });
+    } catch (error) {
+      res.status(500).json({ message: "Error checking IP registration status" });
+    }
+  });
+
+  // Simple login endpoint - uses username and access key
+  app.post("/api/login", async (req, res) => {
+    try {
+      const { username, accessKey, twoFactorCode } = req.body;
+      const clientIp = getClientIp(req);
+      const rateLimitKey = `${clientIp}:${username || 'unknown'}`;
+      
+      const rateCheck = checkLoginRateLimit(rateLimitKey);
+      if (!rateCheck.allowed) {
+        return res.status(429).json({ 
+          message: `Too many failed login attempts. Please wait ${rateCheck.waitMinutes || 15} minutes before trying again.` 
+        });
+      }
+
+      if (!username || !accessKey) {
+        return res.status(400).json({ message: "Username and access key are required" });
+      }
+
+      // SECURITY: Always return same error message to prevent username enumeration
+      const GENERIC_ERROR = "Invalid credentials";
+
+      // Get user and perform operations to maintain consistent timing
+      const user = await storage.getUserByUsername(username);
+      
+      // SECURITY: Always perform access key verification to prevent timing attacks
+      // Use dummy hash if user doesn't exist to maintain consistent timing
+      const hashedKeyToUse = user?.accessKey || 'dummy:hash';
+      const isValidAccessKey = await verifyAccessKey(accessKey, hashedKeyToUse);
+
+      // Both conditions must be true for successful login
+      if (user && isValidAccessKey) {
+        // If user has 2FA enabled, verify code
+        if (user.twoFactorEnabled && user.twoFactorSecret) {
+          if (!twoFactorCode) {
+            return res.json({ 
+              require2FA: true, 
+              message: "Two-factor authentication code required" 
+            });
+          }
+          const isTotpValid = verifyTotpToken(twoFactorCode, user.twoFactorSecret);
+          if (!isTotpValid) {
+            recordFailedLogin(rateLimitKey);
+            return res.status(401).json({ message: "Invalid two-factor authentication code" });
+          }
+        }
+
+        // Reset rate limiting on success
+        resetLoginAttempts(rateLimitKey);
+
+        // Check account status before creating a session.
+        if (user.isBanned) {
+          return res.status(403).json({ 
+            error: "PERMANENTLY_BANNED",
+            message: "Your account has been permanently banned" 
+          });
+        }
+
+        // Check if user is frozen or mining suspended (allow login but with flag)
+        if (user.isFrozen || user.miningSuspended) {
+          // User can still login but with frozen/suspended flag
+          console.log(`Frozen/suspended user ${user.username} logged in - mining/rewards suspended`);
+        }
+
+        // SECURITY: Regenerate session to prevent session fixation
+        await new Promise<void>((resolve, reject) => {
+          req.session.regenerate((err) => {
+            if (err) reject(err);
+            else resolve();
+          });
+        });
+
+        // Set session
+        req.session.userId = user.id;
+        req.user = user;
+
+        res.json({
+          ...serializeUserForClient(user),
+          referralCode: user.referralCode || user.username.toUpperCase().slice(0, 8),
+          isFrozen: user.isFrozen || false // Include frozen status in response
+        });
+      } else {
+        recordFailedLogin(rateLimitKey);
+        // Always return the same generic error message
+        return res.status(401).json({ message: GENERIC_ERROR });
+      }
+    } catch (error: any) {
+      if (error?.message?.includes('endpoint has been disabled') || error?.code === 'XX000') {
+        return res.status(503).json({ message: "Database is reactivating. Please try again in a moment." });
+      }
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Logout endpoint
+  app.post("/api/logout", (req, res) => {
+    req.session.destroy((err) => {
+      if (err) {
+        return res.status(500).json({ message: "Failed to logout" });
+      }
+      res.sendStatus(200);
+    });
+  });
+
+  // Single canonical current-user endpoint. Owned hashrate is never hidden;
+  // suspension only affects eligibility/locked power, not ownership display.
+  app.get("/api/user", async (req, res) => {
+    if (!req.session?.userId || !req.user) return res.sendStatus(401);
+    try {
+      const freshUser = await storage.getUser(req.session.userId);
+      if (!freshUser) {
+        req.session.destroy(() => {});
+        return res.sendStatus(401);
+      }
+      req.user = freshUser;
+      return res.json({
+        ...serializeUserForClient(freshUser),
+        referralCode: freshUser.referralCode || freshUser.username.toUpperCase().slice(0, 8),
+      });
+    } catch (error: any) {
+      if (error?.message?.includes('endpoint has been disabled') || error?.code === 'XX000') {
+        return res.json({
+          ...serializeUserForClient(req.user),
+          referralCode: req.user.referralCode || req.user.username.toUpperCase().slice(0, 8),
+        });
+      }
+      return res.status(500).json({ message: "Database error" });
+    }
+  });
+
+  // Helper middleware to check if user is authenticated.
+  // NOTE: do not mount on '/api/*' — Express strips the matched prefix from
+  // req.path there, which silently breaks the skip-list checks below.
+  app.use((req, res, next) => {
+    if (!req.path.startsWith('/api/')) return next();
+    // Skip auth check for auth endpoints and public read-only endpoints
+    if (req.path.startsWith('/api/register') ||
+        req.path.startsWith('/api/login') ||
+        req.path === '/api/user' ||
+        req.path === '/api/global-stats') {
+      return next();
+    }
+
+    if (!req.session?.userId || !req.user) {
+      return res.status(401).json({ message: "Authentication required" });
+    }
+
+    next();
+  });
+}

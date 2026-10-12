@@ -1,0 +1,37 @@
+kind = "web"
+previewPath = "/"
+title = "BIT2BLOCK"
+description = "The supplied BIT2BLOCK Bitcoin-inspired mining and wallet application, preserving its original frontend and backend."
+version = "1.0.0"
+id = "artifacts/bit2block"
+router = "path"
+
+[[services]]
+name = "web"
+paths = ["/", "/api", "/api/ws"]
+localPort = 24065
+
+[services.development]
+run = "pnpm --filter @workspace/bit2block run dev"
+
+[services.production.build]
+args = ["pnpm", "--filter", "@workspace/bit2block", "run", "build"]
+
+[services.production.build.env]
+NODE_ENV = "production"
+PORT = "24065"
+BASE_PATH = "/"
+
+[services.production.run]
+args = ["node", "--enable-source-maps", "artifacts/bit2block/dist/index.js"]
+
+[services.production.run.env]
+PORT = "24065"
+NODE_ENV = "production"
+
+[services.production.health.startup]
+path = "/api/healthz"
+
+[services.env]
+PORT = "24065"
+BASE_PATH = "/"

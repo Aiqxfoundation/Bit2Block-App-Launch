@@ -1,0 +1,18 @@
+{
+  "version": "1.0",
+  "reason": "initial-startup",
+  "createdAt": "2026-10-12T11:38:21.241Z",
+  "blockHeight": 0,
+  "summary": {
+    "totalUsers": 0,
+    "totalDeposits": 0,
+    "totalWithdrawals": 0,
+    "totalAuditLogs": 0
+  },
+  "data": {
+    "users": [],
+    "deposits": [],
+    "withdrawals": [],
+    "auditLogs": []
+  }
+}

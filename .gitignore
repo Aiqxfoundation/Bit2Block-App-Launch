@@ -48,3 +48,6 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Generated sandbox download archive (served from the app's public dir, not source)
+artifacts/bit2block/public/*.zip

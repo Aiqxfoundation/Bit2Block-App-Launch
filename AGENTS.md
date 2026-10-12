@@ -81,6 +81,11 @@ Registering issues an access key that is only shown once.
   authoritative. Do not delete the `bit2block-pgdata` volume to refresh dependencies.
 - `server/backup.ts` writes daily JSON backups to `backups/` under the package dir (already
   contains a committed sample).
+- A full source archive for downloading can be generated with `/tmp/pack_zip.py` (walks the
+  repo, skips `node_modules`, `.pnpm-store` and `dist`) into
+  `artifacts/bit2block/public/bit2block-source.zip`, which Vite serves at
+  `/bit2block-source.zip` on port 3000. That path is git-ignored on purpose — the archive is a
+  generated download, not source.
 - Cleaning up a throwaway test account by hand: the session table is **singular**
   (`session`, not `sessions`), and `device_fingerprints` / `user_devices` reference
   `devices.id` with no cascade, so delete the fingerprint rows **before** the device row.

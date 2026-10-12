@@ -88,7 +88,7 @@ export function serializeUserForClient(user: SelectUser) {
     registrationIp: _registrationIp,
     ...safeUser
   } = user;
-  return safeUser;
+  return { ...safeUser, securityPin: Boolean(_securityPin) };
 }
 
 export function setupAuth(app: Express) {

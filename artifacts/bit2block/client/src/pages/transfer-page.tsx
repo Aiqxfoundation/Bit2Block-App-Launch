@@ -15,11 +15,12 @@ export default function TransferPage() {
   const [recipient, setRecipient] = useState('');
   const [amount, setAmount] = useState('');
   const [memo, setMemo] = useState('');
+  const [securityPin, setSecurityPin] = useState('');
   
   const b2bBalance = parseFloat(user?.b2bBalance || '0');
 
   const transferMutation = useMutation({
-    mutationFn: async (data: { toUsername: string; amount: string }) => {
+    mutationFn: async (data: { toUsername: string; amount: string; securityPin?: string }) => {
       const res = await apiRequest("POST", "/api/transfer", data);
       if (!res.ok) {
         const error = await res.json().catch(() => ({ message: "Transfer failed" }));
@@ -35,6 +36,7 @@ export default function TransferPage() {
       setRecipient('');
       setAmount('');
       setMemo('');
+      setSecurityPin('');
       queryClient.invalidateQueries({ queryKey: ["/api/user"] });
     },
     onError: (error: Error) => {
@@ -67,9 +69,19 @@ export default function TransferPage() {
       return;
     }
 
+    if (user?.securityPin && (!securityPin || securityPin.length !== 6)) {
+      toast({
+        title: "Security PIN Required",
+        description: "Please enter your 6-digit security PIN to authorize this transfer.",
+        variant: "destructive"
+      });
+      return;
+    }
+    
     transferMutation.mutate({
       toUsername: recipient.trim(),
-      amount: amount.trim()
+      amount: amount.trim(),
+      securityPin: securityPin.trim() || undefined
     });
   };
 
@@ -173,6 +185,26 @@ export default function TransferPage() {
               />
               <p className="text-xs text-muted-foreground mt-1">
                 Max: {b2bBalance.toFixed(4)} B2B
+              </p>
+            </div>
+
+            {/* Security PIN Field */}
+            <div>
+              <label className="text-xs text-muted-foreground font-mono mb-1 block">
+                SECURITY PIN (6 DIGITS) *
+              </label>
+              <Input
+                type="password"
+                inputMode="numeric"
+                maxLength={6}
+                value={securityPin}
+                onChange={(e) => setSecurityPin(e.target.value.replace(/\D/g, ''))}
+                placeholder="Enter 6-digit PIN"
+                className="font-mono text-sm tracking-widest"
+                data-testid="input-transfer-pin"
+              />
+              <p className="text-[10px] text-muted-foreground mt-1">
+                Mandatory for authorizing transfer
               </p>
             </div>
 

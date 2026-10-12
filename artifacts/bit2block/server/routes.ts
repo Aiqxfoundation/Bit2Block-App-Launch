@@ -11,6 +11,8 @@ import { WebSocketServer, WebSocket } from "ws";
 import Decimal from "decimal.js";
 import { db } from "./db";
 import { eq, sql, or, inArray, asc, and } from "drizzle-orm";
+import { randomBytes, scrypt } from "crypto";
+import { promisify } from "util";
 import { 
   generateBase32Secret, 
   getTotpUri, 
@@ -18,6 +20,26 @@ import {
   isValidTxHash, 
   normalizeTxHash 
 } from "./security";
+
+const asyncScrypt = promisify(scrypt);
+
+async function hashPin(pin: string): Promise<string> {
+  const salt = randomBytes(16);
+  const hash = await asyncScrypt(pin, salt, 32) as Buffer;
+  return `${salt.toString('hex')}:${hash.toString('hex')}`;
+}
+
+async function verifyPin(pin: string, hashedPin: string): Promise<boolean> {
+  try {
+    const [saltHex, hashHex] = hashedPin.split(':');
+    if (!saltHex || !hashHex) return false;
+    const salt = Buffer.from(saltHex, 'hex');
+    const hash = await asyncScrypt(pin, salt, 32) as Buffer;
+    return hash.toString('hex') === hashHex;
+  } catch {
+    return false;
+  }
+}
 
 export async function registerRoutes(app: Express) {
   // Setup authentication first
@@ -1105,8 +1127,25 @@ export async function registerRoutes(app: Express) {
         return res.status(401).json({ message: "User not found" });
       }
 
+      // Check mandatory security PIN
+      if (!freshUser.securityPin) {
+        return res.status(400).json({ 
+          requirePinSetup: true, 
+          message: "A Security PIN is mandatory for withdrawals. Please set up your 6-digit PIN in Account settings first." 
+        });
+      }
+
+      const { securityPin, twoFactorCode } = req.body;
+      if (!securityPin) {
+        return res.status(400).json({ message: "Security PIN is required to authorize withdrawals" });
+      }
+
+      const isPinValid = await verifyPin(securityPin, freshUser.securityPin);
+      if (!isPinValid) {
+        return res.status(400).json({ message: "Incorrect Security PIN. Please try again." });
+      }
+
       // Check 2FA if user enabled it
-      const { twoFactorCode } = req.body;
       if (freshUser.twoFactorEnabled && freshUser.twoFactorSecret) {
         if (!twoFactorCode) {
           return res.status(400).json({ 
@@ -2138,6 +2177,64 @@ export async function registerRoutes(app: Express) {
     }
   });
   
+  // Change PIN
+  app.post("/api/change-pin", async (req, res, next) => {
+    try {
+      if (!req.isAuthenticated()) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
+
+      const { currentPin, newPin } = z.object({
+        currentPin: z.string().optional(),
+        newPin: z.string().length(6).regex(/^\d{6}$/, "PIN must be exactly 6 digits")
+      }).parse(req.body);
+
+      const freshUser = await storage.getUser(req.user!.id);
+      if (!freshUser) return res.status(404).json({ message: "User not found" });
+
+      // If PIN already set, verify current PIN before allowing change
+      if (freshUser.securityPin) {
+        if (!currentPin) {
+          return res.status(400).json({ message: "Current PIN is required to change an existing PIN" });
+        }
+        const isValid = await verifyPin(currentPin, freshUser.securityPin);
+        if (!isValid) {
+          return res.status(400).json({ message: "Current PIN is incorrect" });
+        }
+      }
+
+      const hashedNewPin = await hashPin(newPin);
+      await storage.updateUser(req.user!.id, { securityPin: hashedNewPin });
+
+      res.json({ message: "PIN changed successfully" });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Verify PIN
+  app.post("/api/verify-pin", async (req, res, next) => {
+    try {
+      if (!req.isAuthenticated()) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
+
+      const { pin } = z.object({ pin: z.string().length(6) }).parse(req.body);
+
+      const freshUser = await storage.getUser(req.user!.id);
+      if (!freshUser) return res.status(404).json({ message: "User not found" });
+
+      if (!freshUser.securityPin) {
+        return res.json({ valid: true, pinSet: false });
+      }
+
+      const isValid = await verifyPin(pin, freshUser.securityPin);
+      res.json({ valid: isValid, pinSet: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // 2FA Management Endpoints (RFC 6238 TOTP)
   app.get("/api/2fa/status", async (req, res, next) => {
     try {
@@ -2211,14 +2308,19 @@ export async function registerRoutes(app: Express) {
         return res.status(401).json({ message: "Unauthorized" });
       }
 
-      const { token } = req.body;
+      const { token, pin } = req.body;
       const freshUser = await storage.getUser(req.user!.id);
       if (!freshUser) return res.status(404).json({ message: "User not found" });
 
-      const verified = Boolean(token && freshUser.twoFactorSecret && verifyTotpToken(token, freshUser.twoFactorSecret));
+      let verified = false;
+      if (token && freshUser.twoFactorSecret) {
+        verified = verifyTotpToken(token, freshUser.twoFactorSecret);
+      } else if (pin && freshUser.securityPin) {
+        verified = await verifyPin(pin, freshUser.securityPin);
+      }
 
       if (!verified) {
-        return res.status(400).json({ message: "Verification failed. Provide a valid 2FA code." });
+        return res.status(400).json({ message: "Verification failed. Provide a valid 2FA code or security PIN." });
       }
 
       await storage.updateUser(req.user!.id, {
@@ -2476,6 +2578,17 @@ export async function registerRoutes(app: Express) {
         return res.status(401).json({ message: "User not found" });
       }
 
+      if (freshUser.securityPin) {
+        const { securityPin } = req.body;
+        if (!securityPin) {
+          return res.status(400).json({ message: "Security PIN is required to transfer B2B" });
+        }
+        const isPinValid = await verifyPin(securityPin, freshUser.securityPin);
+        if (!isPinValid) {
+          return res.status(400).json({ message: "Incorrect Security PIN" });
+        }
+      }
+      
       const { toUsername, amount } = z.object({
         toUsername: z.string(),
         amount: z.string()

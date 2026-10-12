@@ -12,6 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Loader2, ArrowLeft, ChevronRight, Copy, CheckCircle, RefreshCw, Bitcoin, TrendingUp, ArrowUpDown, Shield, AlertTriangle, Cpu, Clock, Info, AlertCircle } from "lucide-react";
 import { useLocation } from "wouter";
 import { SuspensionModal } from "@/components/SuspensionModal";
+import { TransactionReceiptDialog, type ReceiptTransaction } from "@/components/TransactionReceiptDialog";
 
 interface Transaction {
   id: string;
@@ -62,6 +63,8 @@ export default function WalletPage() {
   const [withdrawAddress, setWithdrawAddress] = useState("");
   const [withdrawPin, setWithdrawPin] = useState("");
   const [withdraw2fa, setWithdraw2fa] = useState("");
+  const [withdrawAuthMethod, setWithdrawAuthMethod] = useState<'pin' | '2fa'>('pin');
+  const [selectedReceipt, setSelectedReceipt] = useState<ReceiptTransaction | null>(null);
   const [depositAmount, setDepositAmount] = useState("");
   const [depositTxHash, setDepositTxHash] = useState("");
   const [copiedAddress, setCopiedAddress] = useState(false);
@@ -551,11 +554,33 @@ export default function WalletPage() {
     // Amount and address are valid: collect the security credentials in a confirmation popup.
     setWithdrawPin("");
     setWithdraw2fa("");
+    // Default to a credential the account actually has; 2FA-only accounts can switch.
+    setWithdrawAuthMethod(user?.twoFactorEnabled && !user?.securityPin ? '2fa' : 'pin');
     setShowWithdrawAuthDialog(true);
   };
 
-  // Authorize and submit the withdrawal with the credentials entered in the confirmation popup
+  // Authorize and submit the withdrawal with the credential chosen in the confirmation popup.
+  // Either the Security PIN or, when 2FA is enabled, the authenticator code is enough.
   const handleConfirmWithdraw = () => {
+    if (withdrawAuthMethod === '2fa') {
+      if (!withdraw2fa || withdraw2fa.length !== 6) {
+        toast({
+          title: "2FA Code Required",
+          description: "Please enter your 6-digit authenticator code.",
+          variant: "destructive"
+        });
+        return;
+      }
+
+      withdrawMutation.mutate({
+        amount: withdrawAmount,
+        address: withdrawAddress,
+        securityPin: "",
+        twoFactorCode: withdraw2fa.trim()
+      });
+      return;
+    }
+
     if (!withdrawPin || withdrawPin.length !== 6) {
       toast({
         title: "Security PIN Required",
@@ -565,20 +590,11 @@ export default function WalletPage() {
       return;
     }
 
-    if (user?.twoFactorEnabled && (!withdraw2fa || withdraw2fa.length !== 6)) {
-      toast({
-        title: "2FA Code Required",
-        description: "Please enter your 6-digit authenticator code.",
-        variant: "destructive"
-      });
-      return;
-    }
-
     withdrawMutation.mutate({
       amount: withdrawAmount,
       address: withdrawAddress,
       securityPin: withdrawPin.trim(),
-      twoFactorCode: withdraw2fa ? withdraw2fa.trim() : undefined
+      twoFactorCode: undefined
     });
   };
 
@@ -1065,9 +1081,12 @@ export default function WalletPage() {
                   className="p-3 bg-[#242424] border-gray-800 cursor-pointer hover:bg-[#2a2a2a]"
                   data-testid={`transaction-${tx.id}`}
                   onClick={() => {
-                    // Only show details for B2B transfers
+                    // B2B transfers open their transfer detail view.
                     if (selectedAsset === 'B2B' && (tx.displayType === 'Transfer Out' || tx.displayType === 'Transfer In')) {
                       setSelectedTransfer(tx);
+                    } else if (tx.displayType === 'Withdraw' || tx.displayType === 'Deposit') {
+                      // Every deposit / withdrawal receipt opens its full details.
+                      setSelectedReceipt(tx);
                     }
                   }}
                 >
@@ -1488,24 +1507,53 @@ export default function WalletPage() {
               </span>
             </div>
 
-            <div>
-              <Label htmlFor="withdraw-auth-pin" className="text-gray-400 text-sm">
-                Security PIN (6 digits) *
-              </Label>
-              <Input
-                id="withdraw-auth-pin"
-                type="password"
-                inputMode="numeric"
-                maxLength={6}
-                value={withdrawPin}
-                onChange={(e) => setWithdrawPin(e.target.value.replace(/\D/g, ''))}
-                placeholder="Enter 6-digit PIN"
-                className="bg-[#1a1a1a] border-gray-700 text-white placeholder:text-gray-600 font-mono tracking-widest mt-2"
-                data-testid="input-withdraw-auth-pin"
-              />
-            </div>
-
             {user?.twoFactorEnabled && (
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  type="button"
+                  onClick={() => setWithdrawAuthMethod('pin')}
+                  className={
+                    withdrawAuthMethod === 'pin'
+                      ? 'bg-[#f7931a] hover:bg-[#e88309] text-black font-medium'
+                      : 'bg-transparent border border-gray-700 text-gray-300 hover:bg-[#2a2a2a]'
+                  }
+                  data-testid="button-auth-method-pin"
+                >
+                  Security PIN
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => setWithdrawAuthMethod('2fa')}
+                  className={
+                    withdrawAuthMethod === '2fa'
+                      ? 'bg-[#f7931a] hover:bg-[#e88309] text-black font-medium'
+                      : 'bg-transparent border border-gray-700 text-gray-300 hover:bg-[#2a2a2a]'
+                  }
+                  data-testid="button-auth-method-2fa"
+                >
+                  Authenticator
+                </Button>
+              </div>
+            )}
+
+            {withdrawAuthMethod === 'pin' ? (
+              <div>
+                <Label htmlFor="withdraw-auth-pin" className="text-gray-400 text-sm">
+                  Security PIN (6 digits) *
+                </Label>
+                <Input
+                  id="withdraw-auth-pin"
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={withdrawPin}
+                  onChange={(e) => setWithdrawPin(e.target.value.replace(/\D/g, ''))}
+                  placeholder="Enter 6-digit PIN"
+                  className="bg-[#1a1a1a] border-gray-700 text-white placeholder:text-gray-600 font-mono tracking-widest mt-2"
+                  data-testid="input-withdraw-auth-pin"
+                />
+              </div>
+            ) : (
               <div>
                 <Label htmlFor="withdraw-auth-2fa" className="text-gray-400 text-sm">
                   Authenticator Code (6 digits) *
@@ -1525,8 +1573,9 @@ export default function WalletPage() {
             )}
 
             <p className="text-xs text-gray-500">
-              Your security PIN{user?.twoFactorEnabled ? ' and authenticator code' : ''} authorize this withdrawal.
-              Set or change your PIN in Account settings.
+              {user?.twoFactorEnabled
+                ? 'Authorize this withdrawal with either your security PIN or your 2FA authenticator code.'
+                : 'Your security PIN authorizes this withdrawal. Set or change it in Account settings.'}
             </p>
 
             <div className="flex gap-2">
@@ -1675,6 +1724,12 @@ export default function WalletPage() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Deposit / Withdrawal Receipt Dialog */}
+      <TransactionReceiptDialog
+        transaction={selectedReceipt}
+        onClose={() => setSelectedReceipt(null)}
+      />
 
       {/* Transfer Details Dialog */}
       <Dialog 

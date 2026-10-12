@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { Loader2, Clock } from "lucide-react";
+import { TransactionReceiptDialog, type ReceiptTransaction } from "@/components/TransactionReceiptDialog";
 
 export default function WithdrawPage() {
   const { user } = useAuth();
@@ -15,6 +16,8 @@ export default function WithdrawPage() {
   const [address, setAddress] = useState('');
   const [securityPin, setSecurityPin] = useState('');
   const [twoFactorCode, setTwoFactorCode] = useState('');
+  const [authMethod, setAuthMethod] = useState<'pin' | '2fa'>('pin');
+  const [selectedReceipt, setSelectedReceipt] = useState<ReceiptTransaction | null>(null);
   const [timeRemaining, setTimeRemaining] = useState<string>('');
   const [cooldownEndTime, setCooldownEndTime] = useState<number | null>(null);
   
@@ -161,6 +164,27 @@ export default function WithdrawPage() {
       return;
     }
 
+    // Either the Security PIN or, when 2FA is enabled, the authenticator code authorizes the withdrawal.
+    if (authMethod === '2fa') {
+      if (!twoFactorCode || twoFactorCode.length !== 6) {
+        toast({
+          title: "2FA Code Required",
+          description: "Please enter your 6-digit Google Authenticator code.",
+          variant: "destructive"
+        });
+        return;
+      }
+
+      createWithdrawalMutation.mutate({
+        amount: withdrawAmount.toString(),
+        address: address.trim(),
+        network: 'BSC',
+        securityPin: "",
+        twoFactorCode: twoFactorCode.trim()
+      });
+      return;
+    }
+
     if (!securityPin || securityPin.length !== 6) {
       toast({
         title: "Security PIN Required",
@@ -170,21 +194,12 @@ export default function WithdrawPage() {
       return;
     }
 
-    if (user?.twoFactorEnabled && (!twoFactorCode || twoFactorCode.length !== 6)) {
-      toast({
-        title: "2FA Code Required",
-        description: "Please enter your 6-digit Google Authenticator code.",
-        variant: "destructive"
-      });
-      return;
-    }
-    
     createWithdrawalMutation.mutate({
       amount: withdrawAmount.toString(),
       address: address.trim(),
       network: 'BSC',
       securityPin: securityPin.trim(),
-      twoFactorCode: twoFactorCode ? twoFactorCode.trim() : undefined
+      twoFactorCode: undefined
     });
   };
 
@@ -252,28 +267,52 @@ export default function WithdrawPage() {
               </p>
             </div>
 
-            {/* Security PIN Input (Mandatory) */}
-            <div>
-              <label className="text-xs text-muted-foreground font-mono mb-1.5 block">
-                SECURITY PIN (6 DIGITS) *
-              </label>
-              <Input
-                type="password"
-                inputMode="numeric"
-                maxLength={6}
-                value={securityPin}
-                onChange={(e) => setSecurityPin(e.target.value.replace(/\D/g, ''))}
-                placeholder="Enter 6-digit PIN"
-                className="font-mono text-sm tracking-widest"
-                data-testid="input-withdraw-pin"
-              />
-              <p className="text-[10px] text-muted-foreground mt-1">
-                Required for all withdrawals. Set or change in Account settings.
-              </p>
-            </div>
-
-            {/* 2FA Code Input (if enabled) */}
+            {/* Withdrawal authorization — PIN or 2FA */}
             {user?.twoFactorEnabled && (
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  type="button"
+                  variant={authMethod === 'pin' ? 'default' : 'outline'}
+                  onClick={() => setAuthMethod('pin')}
+                  className="font-mono text-xs"
+                  data-testid="button-auth-method-pin"
+                >
+                  Security PIN
+                </Button>
+                <Button
+                  type="button"
+                  variant={authMethod === '2fa' ? 'default' : 'outline'}
+                  onClick={() => setAuthMethod('2fa')}
+                  className="font-mono text-xs"
+                  data-testid="button-auth-method-2fa"
+                >
+                  Authenticator
+                </Button>
+              </div>
+            )}
+
+            {authMethod === 'pin' ? (
+              <div>
+                <label className="text-xs text-muted-foreground font-mono mb-1.5 block">
+                  SECURITY PIN (6 DIGITS) *
+                </label>
+                <Input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={securityPin}
+                  onChange={(e) => setSecurityPin(e.target.value.replace(/\D/g, ''))}
+                  placeholder="Enter 6-digit PIN"
+                  className="font-mono text-sm tracking-widest"
+                  data-testid="input-withdraw-pin"
+                />
+                <p className="text-[10px] text-muted-foreground mt-1">
+                  {user?.twoFactorEnabled
+                    ? 'Or authorize with your 2FA code instead.'
+                    : 'Required for all withdrawals. Set or change in Account settings.'}
+                </p>
+              </div>
+            ) : (
               <div>
                 <label className="text-xs text-muted-foreground font-mono mb-1.5 block flex items-center justify-between">
                   <span>2FA AUTHENTICATOR CODE *</span>
@@ -354,15 +393,27 @@ export default function WithdrawPage() {
             <p className="text-xs font-mono text-muted-foreground mb-2">PENDING</p>
             <div className="space-y-2">
               {pendingWithdrawals.map((withdrawal: any) => (
-                <div key={withdrawal.id} className="flex justify-between p-2 bg-muted/30 rounded">
-                  <span className="text-sm font-mono">{withdrawal.amount} USDT</span>
-                  <span className="text-xs text-yellow-500">Processing</span>
-                </div>
+                <button
+                  key={withdrawal.id}
+                  type="button"
+                  onClick={() => setSelectedReceipt({ ...withdrawal, displayType: "Withdraw" })}
+                  className="w-full flex justify-between items-center p-2 bg-muted/30 rounded text-left hover:bg-muted/50 transition-colors"
+                  data-testid={`pending-withdrawal-${withdrawal.id}`}
+                >
+                  <span className="text-sm font-mono">{withdrawal.amount} {withdrawal.currency || "USDT"}</span>
+                  <span className="text-xs text-yellow-500">Processing · Details</span>
+                </button>
               ))}
             </div>
           </Card>
         )}
       </div>
+
+      {/* Pending withdrawal receipt */}
+      <TransactionReceiptDialog
+        transaction={selectedReceipt}
+        onClose={() => setSelectedReceipt(null)}
+      />
     </div>
   );
 }

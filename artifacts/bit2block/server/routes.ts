@@ -1127,31 +1127,40 @@ export async function registerRoutes(app: Express) {
         return res.status(401).json({ message: "User not found" });
       }
 
-      // Check mandatory security PIN
-      if (!freshUser.securityPin) {
+      // Withdrawals are authorized by the Security PIN or, when two-factor
+      // authentication is enabled, an authenticator code — either one is enough.
+      const { securityPin, twoFactorCode } = req.body;
+      const pinProvided = typeof securityPin === "string" && securityPin.trim().length > 0;
+      const codeProvided = typeof twoFactorCode === "string" && twoFactorCode.trim().length > 0;
+      const twoFactorAvailable = Boolean(freshUser.twoFactorEnabled && freshUser.twoFactorSecret);
+
+      if (!freshUser.securityPin && !twoFactorAvailable) {
         return res.status(400).json({ 
           requirePinSetup: true, 
-          message: "A Security PIN is mandatory for withdrawals. Please set up your 6-digit PIN in Account settings first." 
+          message: "Set up a Security PIN or enable two-factor authentication in Account settings before withdrawing." 
         });
       }
 
-      const { securityPin, twoFactorCode } = req.body;
-      if (!securityPin) {
-        return res.status(400).json({ message: "Security PIN is required to authorize withdrawals" });
+      if (!pinProvided && !codeProvided) {
+        return res.status(400).json({ 
+          message: "Enter your Security PIN or your 2FA authenticator code to authorize this withdrawal." 
+        });
       }
 
-      const isPinValid = await verifyPin(securityPin, freshUser.securityPin);
-      if (!isPinValid) {
-        return res.status(400).json({ message: "Incorrect Security PIN. Please try again." });
-      }
-
-      // Check 2FA if user enabled it
-      if (freshUser.twoFactorEnabled && freshUser.twoFactorSecret) {
-        if (!twoFactorCode) {
+      if (pinProvided) {
+        if (!freshUser.securityPin) {
           return res.status(400).json({ 
-            require2FA: true, 
-            message: "Two-factor authentication code is required to process withdrawals" 
+            requirePinSetup: true, 
+            message: "No Security PIN is set on this account. Use your 2FA code or set a PIN in Account settings." 
           });
+        }
+        const isPinValid = await verifyPin(securityPin, freshUser.securityPin);
+        if (!isPinValid) {
+          return res.status(400).json({ message: "Incorrect Security PIN. Please try again." });
+        }
+      } else {
+        if (!twoFactorAvailable) {
+          return res.status(400).json({ message: "Two-factor authentication is not enabled on this account." });
         }
         const isTotpValid = verifyTotpToken(twoFactorCode, freshUser.twoFactorSecret);
         if (!isTotpValid) {
@@ -1209,11 +1218,29 @@ export async function registerRoutes(app: Express) {
         return res.status(403).json({ message: "Admin access required" });
       }
 
-      return res.status(503).json({
-        code: "CHAIN_VERIFIER_NOT_CONFIGURED",
-        message: "Withdrawal approval is disabled until the payout transaction can be verified on its network."
+      const txHash = typeof req.body?.txHash === "string" && req.body.txHash.trim()
+        ? req.body.txHash.trim()
+        : undefined;
+
+      await storage.approveWithdrawal(req.params.id, txHash);
+
+      await storage.createAuditLog({
+        adminId: req.user!.id,
+        adminUsername: req.user!.username,
+        action: "APPROVE_WITHDRAWAL",
+        targetType: "withdrawal",
+        targetId: req.params.id,
+        details: txHash ? `Approved withdrawal (tx: ${txHash})` : "Approved withdrawal request",
+        ipAddress: req.ip || null
       });
-    } catch (error) {
+
+      res.json({ message: "Withdrawal approved" });
+    } catch (error: any) {
+      // Business-rule failures (already processed, insufficient balance, frozen
+      // account) are reported to the admin instead of becoming a generic 500.
+      if (error?.message) {
+        return res.status(400).json({ message: error.message });
+      }
       next(error);
     }
   });
